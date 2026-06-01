@@ -8,6 +8,7 @@
 #include <boost/locale.hpp>
 #include <inputtino/input.hpp>
 #include <libevdev/libevdev.h>
+#include <cstdlib>
 
 // local includes
 #include "src/config.h"
@@ -22,16 +23,23 @@ namespace platf {
 
   inline std::string inputtino_name_for_seat(std::string_view base_name) {
     auto seat_id = inputtino_seat::get_target_seat();
-    if (seat_id.empty() || seat_id == "seat0") {
-      return std::string(base_name);
+    const char *hostname = std::getenv("HOSTNAME");
+    std::string_view hostname_view = hostname ? std::string_view(hostname) : std::string_view();
+
+    std::string name(base_name);
+    if (!seat_id.empty() && seat_id != "seat0") {
+      name.reserve(name.size() + seat_id.size() + 3);
+      name.append(" (");
+      name.append(seat_id);
+      name.push_back(')');
     }
 
-    std::string name;
-    name.reserve(base_name.size() + seat_id.size() + 3);
-    name.append(base_name);
-    name.append(" (");
-    name.append(seat_id);
-    name.push_back(')');
+    if (!hostname_view.empty()) {
+      name.reserve(name.size() + hostname_view.size() + 1);
+      name.push_back(' ');
+      name.append(hostname_view);
+    }
+
     return name;
   }
 
