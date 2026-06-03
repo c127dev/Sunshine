@@ -76,6 +76,7 @@ const config = ref(props.config)
             <option value="x11">X11</option>
             <option value="kwin">KWin Screencast</option>
             <option value="portal">XDG Portal</option>
+            <option value="harec">HARec</option>
           </template>
           <template #windows>
             <option value="ddx">Desktop Duplication API</option>

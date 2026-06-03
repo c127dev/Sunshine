@@ -16,6 +16,7 @@
 #include "src/config.h"
 #include "src/platform/common.h"
 #include "src/utility.h"
+#include "src/platform/linux/harec_input.h"
 
 using namespace std::literals;
 
@@ -35,31 +36,67 @@ namespace platf {
   }
 
   void move_mouse(input_t &input, int deltaX, int deltaY) {
+#ifdef SUNSHINE_BUILD_HAREC
+    if (config::video.capture == "harec") {
+      harec_send_mouse_move(deltaX, deltaY);
+      return;
+    }
+#endif
     auto raw = (input_raw_t *) input.get();
     platf::mouse::move(raw, deltaX, deltaY);
   }
 
   void abs_mouse(input_t &input, const touch_port_t &touch_port, float x, float y) {
+#ifdef SUNSHINE_BUILD_HAREC
+    if (config::video.capture == "harec") {
+      harec_send_mouse_abs(touch_port, x, y);
+      return;
+    }
+#endif
     auto raw = (input_raw_t *) input.get();
     platf::mouse::move_abs(raw, touch_port, x, y);
   }
 
   void button_mouse(input_t &input, int button, bool release) {
+#ifdef SUNSHINE_BUILD_HAREC
+    if (config::video.capture == "harec") {
+      harec_send_mouse_button(button, release);
+      return;
+    }
+#endif
     auto raw = (input_raw_t *) input.get();
     platf::mouse::button(raw, button, release);
   }
 
   void scroll(input_t &input, int high_res_distance) {
+#ifdef SUNSHINE_BUILD_HAREC
+    if (config::video.capture == "harec") {
+      harec_send_scroll(high_res_distance);
+      return;
+    }
+#endif
     auto raw = (input_raw_t *) input.get();
     platf::mouse::scroll(raw, high_res_distance);
   }
 
   void hscroll(input_t &input, int high_res_distance) {
+#ifdef SUNSHINE_BUILD_HAREC
+    if (config::video.capture == "harec") {
+      harec_send_hscroll(high_res_distance);
+      return;
+    }
+#endif
     auto raw = (input_raw_t *) input.get();
     platf::mouse::hscroll(raw, high_res_distance);
   }
 
   void keyboard_update(input_t &input, uint16_t modcode, bool release, uint8_t flags) {
+#ifdef SUNSHINE_BUILD_HAREC
+    if (config::video.capture == "harec") {
+      harec_send_key(modcode, release);
+      return;
+    }
+#endif
     auto raw = (input_raw_t *) input.get();
     platf::keyboard::update(raw, modcode, release, flags);
   }
@@ -70,11 +107,23 @@ namespace platf {
   }
 
   void touch_update(client_input_t *input, const touch_port_t &touch_port, const touch_input_t &touch) {
+#ifdef SUNSHINE_BUILD_HAREC
+    if (config::video.capture == "harec") {
+      harec_send_touch(touch_port, touch);
+      return;
+    }
+#endif
     auto raw = (client_input_raw_t *) input;
     platf::touch::update(raw, touch_port, touch);
   }
 
   void pen_update(client_input_t *input, const touch_port_t &touch_port, const pen_input_t &pen) {
+#ifdef SUNSHINE_BUILD_HAREC
+    if (config::video.capture == "harec") {
+      harec_send_pen(touch_port, pen);
+      return;
+    }
+#endif
     auto raw = (client_input_raw_t *) input;
     platf::pen::update(raw, touch_port, pen);
   }

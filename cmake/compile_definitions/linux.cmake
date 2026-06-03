@@ -241,6 +241,13 @@ if(X11_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/x11grab.cpp")
 endif()
 
+# HAREC
+set(HAREC_FOUND OFF)
+if(${SUNSHINE_ENABLE_HAREC})
+    set(HAREC_FOUND ON)
+    add_compile_definitions(SUNSHINE_BUILD_HAREC)
+endif()
+
 # GIO
 pkg_check_modules(GIO gio-2.0 gio-unix-2.0 REQUIRED)
 if(GIO_FOUND)
@@ -289,8 +296,9 @@ if(NOT ${CUDA_FOUND}
         AND NOT ${KWIN_FOUND}
         AND NOT ${PORTAL_FOUND}
         AND NOT ${WAYLAND_FOUND}
-        AND NOT ${X11_FOUND})
-    message(FATAL_ERROR "Couldn't find either cuda, (libdrm and libcap), libva, kwin, pipewire, portal, wayland or x11")
+        AND NOT ${X11_FOUND}
+        AND NOT ${HAREC_FOUND})
+    message(FATAL_ERROR "Couldn't find either cuda, (libdrm and libcap), libva, kwin, pipewire, portal, wayland, x11 or harec")
 endif()
 
 # tray icon
@@ -358,6 +366,15 @@ list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.h"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/audio.cpp")
+
+if(${SUNSHINE_ENABLE_HAREC})
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/harec.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/harec.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/harec_input.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/harec_input.cpp"
+    )
+endif()
 
 list(APPEND PLATFORM_LIBRARIES
         dl

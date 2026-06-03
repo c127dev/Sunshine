@@ -561,6 +561,16 @@ namespace input {
     auto width = (float) util::endian::big(packet->width);
     auto height = (float) util::endian::big(packet->height);
 
+    if (config::video.capture == "harec") {
+      platf::touch_port_t dummy_port {
+        0, 0,
+        (int)width, (int)height
+      };
+
+      platf::abs_mouse(platf_input, dummy_port, x, y);
+      return;
+    }
+
     auto tpcoords = client_to_touchport(input, {x, y}, {width, height});
     if (!tpcoords) {
       return;
@@ -936,6 +946,25 @@ namespace input {
     if (!config::input.mouse) {
       return;
     }
+#ifdef SUNSHINE_BUILD_HAREC
+    // HARec specific handling: bypass client_to_touchport
+    if (config::video.capture == "harec") {
+        platf::touch_port_t dummy_port {0, 0, 1, 1};
+
+        platf::touch_input_t touch {
+          packet->eventType,
+          0, // rotation ignored for now
+          util::endian::little(packet->pointerId),
+          from_clamped_netfloat(packet->x, 0.0f, 1.0f),
+          from_clamped_netfloat(packet->y, 0.0f, 1.0f),
+          from_clamped_netfloat(packet->pressureOrDistance, 0.0f, 1.0f),
+          0.0f, // contact area ignored
+          0.0f,
+        };
+        platf::touch_update(input->client_context.get(), dummy_port, touch);
+        return;
+    }
+#endif
 
     // Convert the client normalized coordinates to touchport coordinates
     auto coords = client_to_touchport(input, {from_clamped_netfloat(packet->x, 0.0f, 1.0f) * 65535.f, from_clamped_netfloat(packet->y, 0.0f, 1.0f) * 65535.f}, {65535.f, 65535.f});
@@ -987,6 +1016,27 @@ namespace input {
     if (!config::input.mouse) {
       return;
     }
+#ifdef SUNSHINE_BUILD_HAREC
+    // HARec specific handling: bypass client_to_touchport
+    if (config::video.capture == "harec") {
+        platf::touch_port_t dummy_port {0, 0, 1, 1};
+
+        platf::pen_input_t pen {
+          packet->eventType,
+          packet->toolType,
+          packet->penButtons,
+          packet->tilt,
+          0, // rotation
+          from_clamped_netfloat(packet->x, 0.0f, 1.0f),
+          from_clamped_netfloat(packet->y, 0.0f, 1.0f),
+          from_clamped_netfloat(packet->pressureOrDistance, 0.0f, 1.0f),
+          0.0f,
+          0.0f,
+        };
+        platf::pen_update(input->client_context.get(), dummy_port, pen);
+        return;
+    }
+#endif
 
     // Convert the client normalized coordinates to touchport coordinates
     auto coords = client_to_touchport(input, {from_clamped_netfloat(packet->x, 0.0f, 1.0f) * 65535.f, from_clamped_netfloat(packet->y, 0.0f, 1.0f) * 65535.f}, {65535.f, 65535.f});

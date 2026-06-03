@@ -55,6 +55,7 @@
 #include "src/entry_handler.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "harec.h"
 #include "vaapi.h"
 
 #ifdef __GNUC__
@@ -963,6 +964,9 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_X11
       X11,  ///< X11
 #endif
+#ifdef SUNSHINE_BUILD_HAREC
+      HAREC,  ///< HAREC protocol
+#endif
 #ifdef SUNSHINE_BUILD_KWIN
       KWIN,  ///< KWin ScreenCast
 #endif
@@ -1030,7 +1034,11 @@ namespace platf {
     return window_system == window_system_e::WAYLAND && kwin_available() && !kwin_display_names().empty();
   }
 #endif
-
+#ifdef SUNSHINE_BUILD_HAREC
+  bool verify_harec() {
+    return true;
+  }
+#endif
   std::vector<std::string> display_names(mem_type_e hwdevice_type) {
 #ifdef SUNSHINE_BUILD_CUDA
     // display using NvFBC only supports mem_type_e::cuda
@@ -1051,6 +1059,11 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_X11
     if (sources[source::X11]) {
       return x11_display_names();
+    }
+#endif
+#ifdef SUNSHINE_BUILD_HAREC
+    if (sources[source::HAREC]) {
+      return harec_display_names();
     }
 #endif
 #ifdef SUNSHINE_BUILD_PORTAL
@@ -1105,6 +1118,12 @@ namespace platf {
     if (sources[source::X11]) {
       BOOST_LOG(info) << "Screencasting with X11"sv;
       return x11_display(hwdevice_type, display_name, config);
+    }
+#endif
+#ifdef SUNSHINE_BUILD_HAREC
+    if (sources[source::HAREC]) {
+      BOOST_LOG(info) << "Screencasting with HAREC protocol"sv;
+      return harec_display(hwdevice_type, display_name, config);
     }
 #endif
 #ifdef SUNSHINE_BUILD_PORTAL
@@ -1182,7 +1201,13 @@ namespace platf {
       sources[source::KWIN] = true;
     }
 #endif
-
+#ifdef SUNSHINE_BUILD_HAREC
+    if ((config::video.capture.empty() && sources.none()) || config::video.capture == "harec") {
+      if (verify_harec()) {
+        sources[source::HAREC] = true;
+      }
+    }
+#endif
     if (sources.none()) {
       BOOST_LOG(error) << "Unable to initialize capture method"sv;
       return nullptr;
