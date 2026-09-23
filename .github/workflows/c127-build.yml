@@ -1,0 +1,257 @@
+name: c127 build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Source ref for the generic images (opi5pro pins its own in targets/opi5pro.env)'
+        type: string
+        default: master
+      source_branch:
+        description: 'Branch name that ends the release tag'
+        type: string
+        default: master
+      release:
+        description: 'Publish images and a release'
+        type: boolean
+        default: true
+  push:
+    # Registers the workflow with the Actions index. plan gates on the event
+    # name, so a push never builds.
+    branches: [compiler]
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: c127-build
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+      image: ${{ steps.plan.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+
+      - id: plan
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          name="$SOURCE_BRANCH"
+          if printf '%s' "$SOURCE_REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            found=$(git branch -r --contains "$sha" --format '%(refname:lstrip=3)' | grep -v '^HEAD$' | head -n1 || true)
+            name="${found:-$SOURCE_BRANCH}"
+          fi
+          slug=$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^[.-]*//;s/[.-]*$//')
+          version="$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}"
+          tag="v${version}${slug:+.$slug}"
+          image="ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/sunshine"
+          echo "source $sha, tag $tag, image $image"
+          {
+            echo "sha=$sha"
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "image=$image"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    name: build ${{ matrix.target }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    # armv7 and riscv64 are emulated and compile FFmpeg from source.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: generic, arch: amd64, platform: linux/amd64, runner: ubuntu-24.04, experimental: false}
+          - {target: generic, arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm, experimental: false}
+          - {target: generic, arch: armv7, platform: linux/arm/v7, runner: ubuntu-24.04, experimental: true}
+          - {target: generic, arch: riscv64, platform: linux/riscv64, runner: ubuntu-24.04, experimental: true}
+          - {target: opi5pro, arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm, experimental: false}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          path: .packaging
+
+      - id: src
+        env:
+          PLAN_SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          pinned=$(sed -n 's/^SOURCE_REF=//p' ".packaging/targets/${{ matrix.target }}.env")
+          echo "ref=${pinned:-$PLAN_SHA}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.src.outputs.ref }}
+          path: src
+          submodules: recursive
+
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.experimental
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build .deb
+        uses: docker/build-push-action@v6
+        with:
+          context: src
+          file: .packaging/Dockerfile
+          build-contexts: packaging=.packaging
+          build-args: |
+            TARGET=${{ matrix.target }}
+            BUILD_VERSION=${{ needs.plan.outputs.version }}
+            BRANCH=${{ inputs.source_branch }}
+            COMMIT=${{ steps.src.outputs.ref }}
+          platforms: ${{ matrix.platform }}
+          target: deb
+          outputs: type=local,dest=out
+          cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}-${{ matrix.arch }}
+
+      - name: Build and push image by digest
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: src
+          file: .packaging/Dockerfile
+          build-contexts: packaging=.packaging
+          build-args: |
+            TARGET=${{ matrix.target }}
+            BUILD_VERSION=${{ needs.plan.outputs.version }}
+            BRANCH=${{ inputs.source_branch }}
+            COMMIT=${{ steps.src.outputs.ref }}
+          platforms: ${{ matrix.platform }}
+          target: runtime
+          outputs: type=image,name=${{ needs.plan.outputs.image }},push-by-digest=true,name-canonical=true,push=${{ inputs.release }}
+          cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.arch }}
+
+      - run: |
+          set -euo pipefail
+          mkdir -p digests dist
+          digest="${{ steps.push.outputs.digest }}"
+          touch "digests/${digest#sha256:}"
+          mv out/sunshine.deb "dist/sunshine-${{ matrix.target }}-${{ matrix.arch }}.deb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.target }}-${{ matrix.arch }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.release
+        with:
+          name: digest-${{ matrix.target }}-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, build]
+    if: always() && inputs.release && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deb-*
+          path: dist
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker Hub login
+        id: hub
+        env:
+          USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${USER:-}" ] || [ -z "${TOKEN:-}" ]; then
+            echo "DOCKERHUB_USERNAME or DOCKERHUB_TOKEN unset, ghcr.io only"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$TOKEN" | docker login -u "$USER" --password-stdin
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "image=docker.io/$USER/sunshine" >> "$GITHUB_OUTPUT"
+
+      - name: Manifests
+        env:
+          IMAGE: ${{ needs.plan.outputs.image }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          HUB: ${{ steps.hub.outputs.enabled }}
+          HUB_IMAGE: ${{ steps.hub.outputs.image }}
+        run: |
+          set -euo pipefail
+          # generic: one index over every architecture that built.
+          # opi5pro: its own tags, never latest.
+          for target in generic opi5pro; do
+            refs=()
+            for d in digests/digest-"$target"-*/*; do
+              [ -e "$d" ] && refs+=("$IMAGE@sha256:$(basename "$d")")
+            done
+            if [ ${#refs[@]} -eq 0 ]; then
+              echo "::warning::no $target image built"
+              continue
+            fi
+            if [ "$target" = generic ]; then
+              tags=("$VERSION" latest "sha-${SHA:0:7}")
+            else
+              tags=("$VERSION-$target" "$target")
+            fi
+            args=()
+            for t in "${tags[@]}"; do args+=(-t "$IMAGE:$t"); done
+            docker buildx imagetools create "${args[@]}" "${refs[@]}"
+            if [ "$HUB" = true ]; then
+              args=()
+              for t in "${tags[@]}"; do args+=(-t "$HUB_IMAGE:$t"); done
+              docker buildx imagetools create "${args[@]}" "$IMAGE:${tags[0]}"
+            fi
+          done
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.plan.outputs.tag }}
+          target_commitish: ${{ needs.plan.outputs.sha }}
+          name: Sunshine ${{ needs.plan.outputs.tag }}
+          files: dist/*.deb
+          fail_on_unmatched_files: true
+          body: |
+            - Source: ${{ needs.plan.outputs.sha }}
+            - Images: `${{ needs.plan.outputs.image }}:${{ needs.plan.outputs.version }}`, `${{ needs.plan.outputs.image }}:${{ needs.plan.outputs.version }}-opi5pro`
+            - opi5pro source: pinned in `targets/opi5pro.env` on `compiler`

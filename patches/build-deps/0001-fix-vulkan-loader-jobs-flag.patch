@@ -1,0 +1,13 @@
+diff --git a/cmake/ffmpeg/vulkan.cmake b/cmake/ffmpeg/vulkan.cmake
+index 40788578..8eb79342 100644
+--- a/cmake/ffmpeg/vulkan.cmake
++++ b/cmake/ffmpeg/vulkan.cmake
+@@ -67,7 +67,7 @@ add_custom_target(vulkan-loader ALL
+             --build ${CMAKE_CURRENT_BINARY_DIR}/vulkan-loader-build
+             --config Release
+             --target install
+-            -- --jobs=${N_PROC}
++            -- -j ${N_PROC}
+         WORKING_DIRECTORY ${VULKAN_LOADER_GENERATED_SRC_PATH}
+         COMMENT "Target: Vulkan-Loader"
+         VERBATIM

@@ -1,0 +1,28 @@
+diff --git a/src/platform/linux/pipewire.cpp b/src/platform/linux/pipewire.cpp
+index d7a20940..d3f579af 100644
+--- a/src/platform/linux/pipewire.cpp
++++ b/src/platform/linux/pipewire.cpp
+@@ -1040,6 +1040,7 @@ namespace pipewire {
+     }
+ 
+     int get_dmabuf_modifiers() {
++#ifdef SUNSHINE_BUILD_WAYLAND
+       if (wl_display.init() < 0) {
+         return -1;
+       }
+@@ -1083,12 +1084,15 @@ namespace pipewire {
+       if (eglQueryDmaBufFormatsEXT && eglQueryDmaBufModifiersEXT) {
+         query_dmabuf_formats(egl_display.get());
+       }
++#endif
+ 
+       return 0;
+     }
+ 
+     platf::mem_type_e mem_type;
++#ifdef SUNSHINE_BUILD_WAYLAND
+     wl::display_t wl_display;
++#endif
+     std::array<struct dmabuf_format_info_t, MAX_DMABUF_FORMATS> dmabuf_infos;
+     int n_dmabuf_infos;
+     bool display_is_nvidia = false;  // Track if display GPU is NVIDIA

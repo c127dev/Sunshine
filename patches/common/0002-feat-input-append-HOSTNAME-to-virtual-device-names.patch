@@ -1,0 +1,88 @@
+From 028631ba1bc3bd9bc1de20a224ac9a63b3676323 Mon Sep 17 00:00:00 2001
+From: Johan Alvarado <contact@c127.dev>
+Date: Wed, 23 Sep 2026 16:48:25 -0500
+Subject: [PATCH] feat(input): append HOSTNAME to virtual device names
+
+---
+ src/platform/virtualhid_input.cpp | 23 ++++++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/src/platform/virtualhid_input.cpp b/src/platform/virtualhid_input.cpp
+index 362f50af..0c99d3ec 100644
+--- a/src/platform/virtualhid_input.cpp
++++ b/src/platform/virtualhid_input.cpp
+@@ -18,6 +18,9 @@
+ #include <string_view>
+ #include <utility>
+ 
++// lib includes
++#include <lizardbyte/common/env.h>
++
+ // local includes
+ #include "src/config.h"
+ #include "src/logging.h"
+@@ -52,6 +55,20 @@ namespace platf::virtualhid {
+ 
+   namespace {
+ 
++    /**
++     * @brief Append the host name, when set, so devices from several containers can be told apart.
++     *
++     * @param name Device name to extend.
++     * @return Device name followed by `HOSTNAME`.
++     */
++    std::string with_hostname(std::string name) {
++      if (const auto hostname = lizardbyte::common::get_env("HOSTNAME"); !hostname.empty()) {
++        name.push_back(' ');
++        name.append(hostname);
++      }
++      return name;
++    }
++
+     /**
+      * @brief Gamepad profile exposed through Sunshine config.
+      */
+@@ -465,6 +482,7 @@ namespace platf::virtualhid {
+ 
+     lvh::CreateKeyboardOptions options;
+     options.profile = lvh::profiles::keyboard();
++    options.profile.name = with_hostname(options.profile.name);
+     options.stable_id = "sunshine-keyboard";
+     auto created = runtime->create_keyboard(options);
+     if (created) {
+@@ -482,6 +500,7 @@ namespace platf::virtualhid {
+ 
+     lvh::CreateMouseOptions options;
+     options.profile = lvh::profiles::mouse();
++    options.profile.name = with_hostname(options.profile.name);
+     options.stable_id = "sunshine-mouse";
+     auto created = runtime->create_mouse(options);
+     if (created) {
+@@ -501,6 +520,7 @@ namespace platf::virtualhid {
+     if (capabilities.supports_touchscreen) {
+       lvh::CreateTouchscreenOptions options;
+       options.profile = lvh::profiles::touchscreen();
++      options.profile.name = with_hostname(options.profile.name);
+       options.stable_id = "sunshine-touchscreen";
+       auto created = global->runtime->create_touchscreen(options);
+       if (created) {
+@@ -512,6 +532,7 @@ namespace platf::virtualhid {
+     if (capabilities.supports_pen_tablet) {
+       lvh::CreatePenTabletOptions options;
+       options.profile = lvh::profiles::pen_tablet();
++      options.profile.name = with_hostname(options.profile.name);
+       options.stable_id = "sunshine-pen-tablet";
+       auto created = global->runtime->create_pen_tablet(options);
+       if (created) {
+@@ -613,7 +634,7 @@ namespace platf::virtualhid {
+ 
+     const auto &selection = profile_for_metadata(metadata);
+     auto profile = selection.profile();
+-    profile.name = std::format("Sunshine {}", profile.name);
++    profile.name = with_hostname(std::format("Sunshine {}", profile.name));
+     if (config::input.gamepad != "auto"sv) {
+       BOOST_LOG(info) << "Gamepad "sv << id.globalIndex << " will be "sv << profile.name << " (manual selection)"sv;
+     } else {
+-- 
+2.55.0
+
