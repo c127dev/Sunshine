@@ -5,17 +5,19 @@ patches under `patches/`.
 
 | Target | Source | Patches | Platforms | Image tags |
 | --- | --- | --- | --- | --- |
-| `generic` | `master` (input `source_ref`) | `patches/common` | amd64, arm64, armv7, riscv64 | `<version>`, `latest`, `sha-<short>` |
-| `opi5pro` | `SOURCE_REF` in `targets/opi5pro.env` | `patches/opi5pro` | arm64 | `<version>-opi5pro`, `opi5pro` |
+| `generic` | `master` (input `source_ref`) | `patches/common` | amd64, arm64, riscv64 | `<version>`, `latest`, `sha-<short>` |
+| `opi5pro` | `master` (input `source_ref`) | `patches/common`, `patches/opi5pro` | arm64 | `<version>-opi5pro`, `opi5pro` |
 
 Images go to `ghcr.io/<owner>/sunshine`, and to `docker.io/$DOCKERHUB_USERNAME/sunshine`
 when the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets are set. Every run
 publishes a release `vYYYY.MM.DD.<run number>.<branch>` with one `.deb` per
 target and architecture.
 
-armv7 and riscv64 run under QEMU and compile FFmpeg from source, since
-LizardByte/build-deps only releases x86_64 and aarch64. They may fail without
-failing the run.
+riscv64 runs under QEMU. LizardByte/build-deps releases no riscv64 FFmpeg, so
+the `ffmpeg-riscv64` job compiles it once into
+`ghcr.io/<owner>/sunshine-ffmpeg:<build-deps sha>-<patches hash>-riscv64` and
+later runs reuse that image until build-deps or `patches/build-deps` changes.
+A failed riscv64 build does not stop the other images or the release.
 
 ## Run
 
@@ -41,8 +43,6 @@ ref to build:
 git clone --recurse-submodules --shallow-submodules https://github.com/c127dev/Sunshine.git sunshine
 ./build.sh --deb out sunshine                          # generic, host arch
 ./build.sh --platform linux/riscv64 sunshine           # generic, emulated
-git -C sunshine checkout "$(sed -n 's/^SOURCE_REF=//p' targets/opi5pro.env)"
-git -C sunshine submodule update --init --recursive
 ./build.sh --target opi5pro --deb out sunshine
 ```
 
@@ -50,8 +50,8 @@ git -C sunshine submodule update --init --recursive
 
 ## Patches
 
-`patches/common` must apply to `master`, `patches/opi5pro` to its pinned
-`SOURCE_REF`, both with `git apply` in order. `patches/build-deps` applies to
+Each target applies the directories in its `PATCH_DIRS` to `master` with
+`git apply`, in order. `patches/build-deps` applies to
 `third-party/build-deps` when FFmpeg is compiled. To refresh one:
 
 ```bash

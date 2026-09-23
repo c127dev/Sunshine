@@ -28,9 +28,11 @@ for pin in ${SUBMODULE_PINS:-}; do
   git -C "$path" submodule update -q --init --recursive
 done
 
-for patch in "$PKG/$PATCH_DIR"/*.patch; do
-  echo "--- apply $(basename "$patch") ---"
-  git apply --verbose "$patch"
+for dir in $PATCH_DIRS; do
+  for patch in "$PKG/$dir"/*.patch; do
+    echo "--- apply $dir/$(basename "$patch") ---"
+    git apply --verbose "$patch"
+  done
 done
 
 sunshine_flags=(
@@ -54,15 +56,20 @@ sunshine_flags=(
   -DGLAD_SKIP_PIP_INSTALL=ON
 )
 
-if [ "$FFMPEG" = prebuilt ] && [ "$arch" != x86_64 ] && [ "$arch" != aarch64 ]; then
+if [ "$FFMPEG" = prebuilt ] && [ -n "${FFMPEG_ONLY:-}" ]; then
+  FFMPEG=source
+elif [ "$FFMPEG" = prebuilt ] && [ "$arch" != x86_64 ] && [ "$arch" != aarch64 ]; then
   echo "no prebuilt FFmpeg for $arch, building from source"
   FFMPEG=source
 fi
 
-if [ "$FFMPEG" != prebuilt ]; then
-  deps=/tmp/build-deps
-  cp -a third-party/build-deps "$deps"
-  cd "$deps"
+if [ -z "${FFMPEG_ONLY:-}" ] && [ -f /ffmpeg-cache/ffmpeg-dist/ffmpeg/lib/libavcodec.a ]; then
+  echo "FFmpeg from the ffmpeg image"
+  cp -a /ffmpeg-cache/ffmpeg-dist /ffmpeg-dist
+  sunshine_flags+=(-DFFMPEG_PREPARED_BINARIES=/ffmpeg-dist/ffmpeg)
+elif [ "$FFMPEG" != prebuilt ]; then
+  # In place: its .git file points into /src/.git/modules.
+  cd third-party/build-deps
   for patch in "$PKG"/patches/build-deps/*.patch; do
     echo "--- apply build-deps $(basename "$patch") ---"
     git apply --verbose "$patch"
@@ -77,6 +84,11 @@ if [ "$FFMPEG" != prebuilt ]; then
     -DBUILD_FFMPEG_AMF=OFF
     -DBUILD_FFMPEG_NV_CODEC_HEADERS=OFF
   )
+
+  # No use for software AV1 there, and it is the slowest part under QEMU.
+  if [ "$arch" = riscv64 ]; then
+    deps_flags+=(-DBUILD_FFMPEG_SVT_AV1=OFF)
+  fi
 
   if [ "$FFMPEG" = rockchip ]; then
     ff=third-party/FFmpeg/FFmpeg
@@ -101,18 +113,24 @@ open(path, "w").write(src.replace(anchor, anchor + inject, 1))
 PY
     # VAAPI, Vulkan and SVT-AV1 are unusable on RK3588.
     deps_flags+=(-DBUILD_FFMPEG_LIBVA=OFF -DBUILD_FFMPEG_VULKAN=OFF -DBUILD_FFMPEG_SVT_AV1=OFF)
-    sunshine_flags+=(
-      -DSUNSHINE_ENABLE_RKMPP=ON
-      # libavcodec.a references mpp/rga, and Sunshine links the archives directly.
-      "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--no-as-needed -lrockchip_mpp -lrga -Wl,--as-needed"
-    )
   fi
 
   cmake -B build -S . "${deps_flags[@]}"
   cmake --build build -j "$(nproc)"
   cmake --install build
+  if [ -n "${FFMPEG_ONLY:-}" ]; then
+    exit 0
+  fi
   sunshine_flags+=(-DFFMPEG_PREPARED_BINARIES=/ffmpeg-dist/ffmpeg)
   cd /src
+fi
+
+if [ "${RKMPP:-OFF}" = ON ]; then
+  sunshine_flags+=(
+    -DSUNSHINE_ENABLE_RKMPP=ON
+    # libavcodec.a references mpp/rga, and Sunshine links the archives directly.
+    "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--no-as-needed -lrockchip_mpp -lrga -Wl,--as-needed"
+  )
 fi
 
 cmake -B build -S . "${sunshine_flags[@]}"

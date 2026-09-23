@@ -2,6 +2,8 @@
 # Build context: a Sunshine checkout with submodules. This branch is mounted at
 # /packaging, so it never has to be part of the context.
 ARG BASE_IMAGE=ubuntu:24.04
+# An image built from the ffmpeg stage, reused instead of compiling FFmpeg.
+ARG FFMPEG_IMAGE=toolchain
 
 FROM ${BASE_IMAGE} AS toolchain
 ARG TARGET=generic
@@ -28,15 +30,26 @@ RUN set -eux; \
     case "$(uname -m)" in \
       x86_64)  a=x64;     base=https://nodejs.org/dist ;; \
       aarch64) a=arm64;   base=https://nodejs.org/dist ;; \
-      armv7l)  a=armv7l;  base=https://nodejs.org/dist ;; \
       riscv64) a=riscv64; base=https://unofficial-builds.nodejs.org/download/release ;; \
       *) echo "no Node.js build for $(uname -m)" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "$base/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-$a.tar.xz" \
       | tar -xJ -C /usr/local --strip-components=1; \
     node --version
-COPY --from=packaging scripts/rockchip-libs.sh /usr/local/bin/
-RUN if [ "$TARGET" = opi5pro ]; then rockchip-libs.sh; fi
+RUN --mount=type=bind,from=packaging,target=/packaging \
+    if grep -q '^RKMPP=ON' "/packaging/targets/$TARGET.env"; then /packaging/scripts/rockchip-libs.sh; fi
+
+FROM ${FFMPEG_IMAGE} AS ffmpeg-cache
+
+FROM toolchain AS ffmpeg-build
+ARG TARGET=generic
+RUN --mount=type=bind,target=/src-ro \
+    --mount=type=bind,from=packaging,target=/packaging \
+    --mount=type=cache,target=/ccache \
+    cp -a /src-ro /src && TARGET="$TARGET" FFMPEG_ONLY=1 /packaging/scripts/sunshine-builder.sh
+
+FROM scratch AS ffmpeg
+COPY --from=ffmpeg-build /ffmpeg-dist /ffmpeg-dist
 
 FROM toolchain AS build
 ARG TARGET=generic
@@ -46,6 +59,7 @@ ARG BRANCH=""
 ARG COMMIT=""
 RUN --mount=type=bind,target=/src-ro \
     --mount=type=bind,from=packaging,target=/packaging \
+    --mount=type=bind,from=ffmpeg-cache,target=/ffmpeg-cache \
     --mount=type=cache,target=/ccache \
     cp -a /src-ro /src && TARGET="$TARGET" BUILD_VERSION="$BUILD_VERSION" BRANCH="$BRANCH" COMMIT="$COMMIT" /packaging/scripts/sunshine-builder.sh
 
@@ -61,7 +75,7 @@ RUN --mount=type=bind,from=build,source=/out,target=/out \
     apt-get update; \
     apt-get install -y --no-install-recommends /out/sunshine.deb \
       libegl1 libgl1-mesa-dri libvulkan1 mesa-va-drivers; \
-    if [ "$TARGET" = opi5pro ]; then \
+    if [ -e /buildlib/librockchip_mpp.so ]; then \
       cp -a /buildlib/librockchip_mpp.so* /buildlib/librga.so* /usr/lib/; \
       ldconfig; \
     fi; \

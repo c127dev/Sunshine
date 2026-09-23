@@ -1,0 +1,905 @@
+From 28d6b649f5ed702498752ca1cfaa18d86f1f1836 Mon Sep 17 00:00:00 2001
+From: Johan Alvarado <contact@c127.dev>
+Date: Wed, 23 Sep 2026 17:38:46 -0500
+Subject: [PATCH] feat(linux): rkmpp encoder for Rockchip RK3588
+
+Native encode device over h264_rkmpp/hevc_rkmpp. Wayland capture uses a
+persistent ring of LINEAR buffers when the encoder is rkmpp; other
+encoders keep the upstream capture path.
+---
+ cmake/compile_definitions/linux.cmake |  16 +
+ cmake/prep/options.cmake              |   2 +
+ src/platform/common.h                 |   1 +
+ src/platform/linux/kmsgrab.cpp        |  10 +-
+ src/platform/linux/rkmpp.cpp          | 418 ++++++++++++++++++++++++++
+ src/platform/linux/rkmpp.h            |  16 +
+ src/platform/linux/wayland.cpp        |  97 ++++++
+ src/platform/linux/wayland.h          |  25 ++
+ src/platform/linux/wlgrab.cpp         |  19 +-
+ src/video.cpp                         |  73 +++++
+ 10 files changed, 675 insertions(+), 2 deletions(-)
+ create mode 100644 src/platform/linux/rkmpp.cpp
+ create mode 100644 src/platform/linux/rkmpp.h
+
+diff --git a/cmake/compile_definitions/linux.cmake b/cmake/compile_definitions/linux.cmake
+index 485e419a..21ff005f 100644
+--- a/cmake/compile_definitions/linux.cmake
++++ b/cmake/compile_definitions/linux.cmake
+@@ -124,6 +124,22 @@ if(LIBVA_FOUND)
+             "${CMAKE_SOURCE_DIR}/src/platform/linux/vaapi.cpp")
+ endif()
+ 
++# rkmpp (Rockchip RK3588 VEPU hardware encoder)
++if(${SUNSHINE_ENABLE_RKMPP})
++    pkg_check_modules(RKMPP rockchip_mpp)
++    pkg_check_modules(RGA librga)
++    if(RKMPP_FOUND AND RGA_FOUND)
++        add_compile_definitions(SUNSHINE_BUILD_RKMPP)
++        include_directories(SYSTEM ${RKMPP_INCLUDE_DIRS} ${RGA_INCLUDE_DIRS})
++        list(APPEND PLATFORM_LIBRARIES ${RKMPP_LIBRARIES} ${RGA_LIBRARIES})
++        list(APPEND PLATFORM_TARGET_FILES
++                "${CMAKE_SOURCE_DIR}/src/platform/linux/rkmpp.h"
++                "${CMAKE_SOURCE_DIR}/src/platform/linux/rkmpp.cpp")
++    else()
++        message(WARNING "SUNSHINE_ENABLE_RKMPP set but rockchip_mpp/librga not found via pkg-config")
++    endif()
++endif()
++
+ # vulkan video encoding (via FFmpeg)
+ if(${SUNSHINE_ENABLE_VULKAN})
+     if(NOT SUNSHINE_SYSTEM_VULKAN_HEADERS)
+diff --git a/cmake/prep/options.cmake b/cmake/prep/options.cmake
+index f6d4e5b4..8a95a1d9 100644
+--- a/cmake/prep/options.cmake
++++ b/cmake/prep/options.cmake
+@@ -62,6 +62,8 @@ elseif(UNIX)  # Linux
+             "Enable KMS grab if available." ON)
+     option(SUNSHINE_ENABLE_VAAPI
+             "Enable building vaapi specific code." ON)
++    option(SUNSHINE_ENABLE_RKMPP
++            "Enable Rockchip MPP (VEPU) hardware encoding." OFF)
+     option(SUNSHINE_ENABLE_VULKAN
+             "Enable Vulkan video encoding." ON)
+     option(SUNSHINE_ENABLE_WAYLAND
+diff --git a/src/platform/common.h b/src/platform/common.h
+index e8aff70e..cbd1fb1f 100644
+--- a/src/platform/common.h
++++ b/src/platform/common.h
+@@ -331,6 +331,7 @@ namespace platf {
+     cuda,  ///< CUDA
+     videotoolbox,  ///< VideoToolbox
+     vulkan,  ///< Vulkan
++    rkmpp,  ///< Rockchip MPP (VEPU)
+     unknown  ///< Unknown
+   };
+ 
+diff --git a/src/platform/linux/kmsgrab.cpp b/src/platform/linux/kmsgrab.cpp
+index 8a085763..071f0a63 100644
+--- a/src/platform/linux/kmsgrab.cpp
++++ b/src/platform/linux/kmsgrab.cpp
+@@ -23,6 +23,9 @@
+ // local includes
+ #include "cuda.h"
+ #include "graphics.h"
++#ifdef SUNSHINE_BUILD_RKMPP
++  #include "rkmpp.h"
++#endif
+ #include "src/config.h"
+ #include "src/logging.h"
+ #include "src/platform/common.h"
+@@ -1874,6 +1877,11 @@ namespace platf {
+        * @return Constructed AVCodec encode device object.
+        */
+       std::unique_ptr<avcodec_encode_device_t> make_avcodec_encode_device(pix_fmt_e pix_fmt) override {
++#ifdef SUNSHINE_BUILD_RKMPP
++        if (mem_type == mem_type_e::rkmpp) {
++          return rkmpp::make_avcodec_encode_device(width, height);
++        }
++#endif
+ #ifdef SUNSHINE_BUILD_VAAPI
+         if (mem_type == mem_type_e::vaapi) {
+           return va::make_avcodec_encode_device(width, height, dup(card.render_fd.el), img_offset_x, img_offset_y, true);
+@@ -2054,7 +2062,7 @@ namespace platf {
+    * @return KMS display backend, or nullptr when initialization fails.
+    */
+   std::shared_ptr<display_t> kms_display(mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
+-    if (hwdevice_type == mem_type_e::vaapi || hwdevice_type == mem_type_e::cuda || hwdevice_type == mem_type_e::vulkan) {
++    if (hwdevice_type == mem_type_e::vaapi || hwdevice_type == mem_type_e::cuda || hwdevice_type == mem_type_e::vulkan || hwdevice_type == mem_type_e::rkmpp) {
+       auto disp = std::make_shared<kms::display_vram_t>(hwdevice_type);
+ 
+       if (!disp->init(display_name, config)) {
+diff --git a/src/platform/linux/rkmpp.cpp b/src/platform/linux/rkmpp.cpp
+new file mode 100644
+index 00000000..14bc90d6
+--- /dev/null
++++ b/src/platform/linux/rkmpp.cpp
+@@ -0,0 +1,418 @@
++/**
++ * @file src/platform/linux/rkmpp.cpp
++ * @brief Rockchip MPP (VEPU) hardware encode device.
++ *
++ * Pipeline: captured RGB dmabuf --> h264/hevc_rkmpp as AV_PIX_FMT_DRM_PRIME.
++ * The VEPU does the RGB->YUV conversion in hardware, so the captured buffer is
++ * imported into the encoder directly (true zero-copy, no RGA involved — the
++ * BSP RGA character device /dev/rga does not exist on mainline kernels).
++ *
++ * The VEPU cannot scale. When the stream resolution differs from the captured
++ * display, the GPU bridges the gap: the source dmabuf is imported into EGL and
++ * blitted (scaled) into a linear XRGB8888 GBM buffer of the stream size, which
++ * is then fed to the encoder the same way.
++ */
++
++// standard includes
++#include <cerrno>
++#include <cstring>
++#include <drm_fourcc.h>
++#include <fcntl.h>
++#include <gbm.h>
++#include <linux/dma-buf.h>
++#include <poll.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++extern "C" {
++#include <libavutil/hwcontext.h>
++#include <libavutil/hwcontext_drm.h>
++#include <libavutil/pixdesc.h>
++}
++
++// local includes
++#include "rkmpp.h"
++#include "src/logging.h"
++#include "src/platform/linux/graphics.h"
++#include "src/video.h"
++
++using namespace std::literals;
++
++namespace rkmpp {
++
++  namespace {
++    void free_drm_desc(void *, uint8_t *data) {
++      auto desc = (AVDRMFrameDescriptor *) data;
++      if (desc->objects[0].fd >= 0) {
++        close(desc->objects[0].fd);
++      }
++      av_free(desc);
++    }
++  }  // namespace
++
++  class rkmpp_t: public platf::avcodec_encode_device_t {
++  public:
++    int init(int in_width, int in_height) {
++      // Must be non-null: video.cpp routes null-data devices to the software
++      // (swscale) path. The RKMPP hwdevice itself is created by
++      // rkmpp_init_avcodec_hardware_input_buffer in video.cpp, which never
++      // dereferences this pointer.
++      this->data = this;
++      width = in_width;
++      height = in_height;
++      return 0;
++    }
++
++    int set_frame(AVFrame *frame, AVBufferRef *hw_frames_ctx) override {
++      this->hwframe.reset(frame);
++      this->frame = frame;
++
++      // Allocate one BGR0 frame from the encoder's DRM_PRIME pool. It backs
++      // dummy images (probe/idle frames that carry no capture dmabuf).
++      dummy_frame.reset(av_frame_alloc());
++      if (!dummy_frame || av_hwframe_get_buffer(hw_frames_ctx, dummy_frame.get(), 0)) {
++        BOOST_LOG(error) << "rkmpp: couldn't allocate a dummy hwframe buffer"sv;
++        return -1;
++      }
++      return 0;
++    }
++
++    void apply_colorspace() override {
++      // Nothing to do: video.cpp sets colorspace/range on the AVCodecContext
++      // and rkmppenc forwards them to the VEPU's RGB->YUV converter per frame.
++    }
++
++    int convert(platf::img_t &img) override {
++      auto descriptor = dynamic_cast<egl::img_descriptor_t *>(&img);
++      if (!descriptor) {
++        BOOST_LOG(error) << "rkmpp: capture image is not a dmabuf descriptor"sv;
++        return -1;
++      }
++
++      if (descriptor->sequence == 0) {
++        // Dummy image (no dmabuf attached) — encode a black frame.
++        return attach_dummy();
++      }
++
++      auto &sd = descriptor->sd;
++
++      if (sd.width != frame->width || sd.height != frame->height) {
++        // The VEPU cannot scale — blit through the GPU into a stream-sized buffer.
++        return scale_convert(sd);
++      }
++
++      if (sd.modifier != DRM_FORMAT_MOD_LINEAR && sd.modifier != DRM_FORMAT_MOD_INVALID) {
++        log_once_unsupported_modifier(sd.modifier);
++        return -1;
++      }
++
++      switch (sd.fourcc) {
++        case DRM_FORMAT_XRGB8888:
++        case DRM_FORMAT_ARGB8888:
++          // Matches the BGR0/BGRA sw formats the encoder was opened with;
++          // the VEPU ignores the alpha channel.
++          break;
++        default:
++          BOOST_LOG(error) << "rkmpp: unsupported source fourcc: "sv << util::hex(sd.fourcc).to_string_view();
++          return -1;
++      }
++
++      auto fd = dup(sd.fds[0]);
++      if (fd < 0) {
++        BOOST_LOG(error) << "rkmpp: couldn't dup capture dmabuf: "sv << strerror(errno);
++        return -1;
++      }
++
++      // Implicit sync: the compositor's copy into this buffer is asynchronous
++      // GPU work tracked by dma-buf fences. The VEPU does not wait on those
++      // fences, so wait here (POLLIN = exclusive/write fence signaled) or the
++      // encoder reads half-written frames under GPU load (black patches).
++      pollfd pfd {fd, POLLIN, 0};
++      if (poll(&pfd, 1, 100) < 0) {
++        BOOST_LOG(warning) << "rkmpp: dmabuf fence wait failed: "sv << strerror(errno);
++      }
++
++      auto size = lseek(fd, 0, SEEK_END);
++      if (size < 0) {
++        BOOST_LOG(error) << "rkmpp: couldn't size capture dmabuf: "sv << strerror(errno);
++        close(fd);
++        return -1;
++      }
++
++      auto desc = (AVDRMFrameDescriptor *) av_mallocz(sizeof(AVDRMFrameDescriptor));
++      if (!desc) {
++        close(fd);
++        return -1;
++      }
++
++      desc->nb_objects = 1;
++      desc->objects[0].fd = fd;
++      desc->objects[0].size = (size_t) size;
++      desc->objects[0].format_modifier = DRM_FORMAT_MOD_LINEAR;
++
++      desc->nb_layers = 1;
++      auto &layer = desc->layers[0];
++      layer.format = sd.fourcc;
++      layer.nb_planes = 1;
++      layer.planes[0].object_index = 0;
++      layer.planes[0].offset = sd.offsets[0];
++      layer.planes[0].pitch = sd.pitches[0];
++
++      auto buf = av_buffer_create((uint8_t *) desc, sizeof(*desc), free_drm_desc, nullptr, 0);
++      if (!buf) {
++        free_drm_desc(nullptr, (uint8_t *) desc);
++        return -1;
++      }
++
++      av_buffer_unref(&frame->buf[0]);
++      frame->buf[0] = buf;
++      frame->data[0] = (uint8_t *) desc;
++      return 0;
++    }
++
++  private:
++    struct scale_slot_t {
++      gbm_bo *bo = nullptr;
++      egl::rgb_t rgb;  // EGLImage + GL texture bound to the slot's dmabuf
++      AVBufferRef *ref = nullptr;  // base ref on the slot's AVDRMFrameDescriptor
++    };
++
++    /**
++     * @brief Lazy-init the GPU scaler: EGL on a render node + a ring of
++     * stream-sized linear XRGB8888 GBM buffers the blit lands in.
++     */
++    int init_scaler() {
++      for (auto node : {"/dev/dri/renderD128", "/dev/dri/renderD129", "/dev/dri/renderD130"}) {
++        render_fd.el = open(node, O_RDWR | O_CLOEXEC);
++        if (render_fd.el >= 0) {
++          break;
++        }
++      }
++      if (render_fd.el < 0) {
++        BOOST_LOG(error) << "rkmpp: scaler: couldn't open a DRM render node"sv;
++        return -1;
++      }
++
++      gbm::init();
++      if (!gbm::create_device) {
++        BOOST_LOG(error) << "rkmpp: scaler: libgbm not available"sv;
++        return -1;
++      }
++
++      gbm_dev.reset(gbm::create_device(render_fd.el));
++      if (!gbm_dev) {
++        BOOST_LOG(error) << "rkmpp: scaler: couldn't create GBM device"sv;
++        return -1;
++      }
++
++      egl_display = egl::make_display(gbm_dev.get());
++      if (!egl_display) {
++        return -1;
++      }
++
++      auto ctx_opt = egl::make_ctx(egl_display.get());
++      if (!ctx_opt) {
++        return -1;
++      }
++      egl_ctx = std::move(*ctx_opt);
++
++      fbos = gl::frame_buf_t::make(2);
++
++      // graphics.h wraps libgbm behind an opaque gbm::device; the direct libgbm
++      // calls below need the real gbm_device pointer.
++      auto gbm_raw = reinterpret_cast<struct gbm_device *>(gbm_dev.get());
++
++      for (auto &slot : slots) {
++        slot.bo = gbm_bo_create(gbm_raw, frame->width, frame->height, GBM_FORMAT_XRGB8888, GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
++        if (!slot.bo) {
++          BOOST_LOG(error) << "rkmpp: scaler: couldn't create a GBM buffer"sv;
++          return -1;
++        }
++
++        auto fd = gbm_bo_get_fd(slot.bo);
++        if (fd < 0) {
++          BOOST_LOG(error) << "rkmpp: scaler: couldn't export GBM buffer"sv;
++          return -1;
++        }
++
++        egl::surface_descriptor_t dst_sd {};
++        dst_sd.width = frame->width;
++        dst_sd.height = frame->height;
++        dst_sd.fds[0] = fd;
++        dst_sd.fds[1] = dst_sd.fds[2] = dst_sd.fds[3] = -1;
++        dst_sd.fourcc = DRM_FORMAT_XRGB8888;
++        dst_sd.modifier = DRM_FORMAT_MOD_LINEAR;
++        dst_sd.pitches[0] = gbm_bo_get_stride(slot.bo);
++        dst_sd.offsets[0] = 0;
++
++        auto rgb_opt = egl::import_source(egl_display.get(), dst_sd);
++        if (!rgb_opt) {
++          BOOST_LOG(error) << "rkmpp: scaler: couldn't import target buffer into EGL"sv;
++          close(fd);
++          return -1;
++        }
++        slot.rgb = std::move(*rgb_opt);
++
++        auto size = lseek(fd, 0, SEEK_END);
++        if (size < 0) {
++          close(fd);
++          return -1;
++        }
++
++        auto desc = (AVDRMFrameDescriptor *) av_mallocz(sizeof(AVDRMFrameDescriptor));
++        if (!desc) {
++          close(fd);
++          return -1;
++        }
++        desc->nb_objects = 1;
++        desc->objects[0].fd = fd;  // owned by the descriptor, closed by free_drm_desc
++        desc->objects[0].size = (size_t) size;
++        desc->objects[0].format_modifier = DRM_FORMAT_MOD_LINEAR;
++        desc->nb_layers = 1;
++        desc->layers[0].format = DRM_FORMAT_XRGB8888;
++        desc->layers[0].nb_planes = 1;
++        desc->layers[0].planes[0].object_index = 0;
++        desc->layers[0].planes[0].offset = 0;
++        desc->layers[0].planes[0].pitch = dst_sd.pitches[0];
++
++        slot.ref = av_buffer_create((uint8_t *) desc, sizeof(*desc), free_drm_desc, nullptr, 0);
++        if (!slot.ref) {
++          free_drm_desc(nullptr, (uint8_t *) desc);
++          return -1;
++        }
++      }
++
++      BOOST_LOG(info) << "rkmpp: scaling "sv << width << 'x' << height
++                      << " -> "sv << frame->width << 'x' << frame->height << " via GPU blit"sv;
++      return 0;
++    }
++
++    /**
++     * @brief GPU-scale the captured dmabuf into a stream-sized buffer, then
++     * hand that buffer to the encoder.
++     */
++    int scale_convert(const egl::surface_descriptor_t &sd) {
++      if (scaler_state == 0) {
++        scaler_state = init_scaler() ? -1 : 1;
++      }
++      if (scaler_state < 0) {
++        return -1;
++      }
++
++      auto src = egl::import_source(egl_display.get(), sd);
++      if (!src) {
++        return -1;
++      }
++
++      auto &slot = slots[next_slot];
++      next_slot = (next_slot + 1) % slots.size();
++
++      gl::ctx.BindFramebuffer(GL_READ_FRAMEBUFFER, fbos[0]);
++      gl::ctx.FramebufferTexture(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, (*src)->tex[0], 0);
++      gl::ctx.BindFramebuffer(GL_DRAW_FRAMEBUFFER, fbos[1]);
++      gl::ctx.FramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, slot.rgb->tex[0], 0);
++      gl::ctx.BlitFramebuffer(0, 0, sd.width, sd.height, 0, 0, frame->width, frame->height, GL_COLOR_BUFFER_BIT, GL_LINEAR);
++      gl::ctx.BindFramebuffer(GL_READ_FRAMEBUFFER, 0);
++      gl::ctx.BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
++      gl::ctx.Finish();
++      gl_drain_errors;
++
++      auto buf = av_buffer_ref(slot.ref);
++      if (!buf) {
++        return -1;
++      }
++      av_buffer_unref(&frame->buf[0]);
++      frame->buf[0] = buf;
++      frame->data[0] = slot.ref->data;
++      return 0;
++    }
++
++    /**
++     * @brief Point the encoder frame at the pool-allocated black frame.
++     *
++     * Used for probe/idle images which carry no capture dmabuf.
++     */
++    int attach_dummy() {
++      if (!dummy_filled) {
++        auto desc = (AVDRMFrameDescriptor *) dummy_frame->data[0];
++        auto fd = desc->objects[0].fd;
++        auto size = desc->objects[0].size;
++
++        dma_buf_sync sync {DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE};
++        ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
++
++        auto map = mmap(nullptr, size, PROT_WRITE, MAP_SHARED, fd, 0);
++        if (map == MAP_FAILED) {
++          BOOST_LOG(error) << "rkmpp: couldn't mmap dummy dmabuf: "sv << strerror(errno);
++          return -1;
++        }
++        memset(map, 0, size);  // zeroed BGR0 == black
++        munmap(map, size);
++
++        sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
++        ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
++
++        dummy_filled = true;
++      }
++
++      auto buf = av_buffer_ref(dummy_frame->buf[0]);
++      if (!buf) {
++        return -1;
++      }
++      av_buffer_unref(&frame->buf[0]);
++      frame->buf[0] = buf;
++      frame->data[0] = dummy_frame->data[0];
++      return 0;
++    }
++
++    void log_once_unsupported_modifier(std::uint64_t modifier) {
++      if (!modifier_logged) {
++        BOOST_LOG(error) << "rkmpp: captured buffer has non-linear modifier "sv
++                         << util::hex(modifier).to_string_view()
++                         << " — the encoder only imports linear RGB (AFBC capture unsupported)"sv;
++        modifier_logged = true;
++      }
++    }
++
++    // Keep the encoder's frame alive for the lifetime of the device.
++    frame_t hwframe;
++    frame_t dummy_frame;
++
++    int width = 0;
++    int height = 0;
++    bool dummy_filled = false;
++    bool modifier_logged = false;
++
++    // GPU scaler state (members ordered for correct teardown: the EGL context
++    // must outlive the GL objects and slot images).
++    file_t render_fd;
++    gbm::gbm_t gbm_dev;
++    egl::display_t egl_display;
++    std::optional<egl::ctx_t> egl_ctx;
++    gl::frame_buf_t fbos;
++    std::array<scale_slot_t, 3> slots;
++    int next_slot = 0;
++    int scaler_state = 0;  // 0 = untried, 1 = ready, -1 = failed (don't retry)
++
++  public:
++    ~rkmpp_t() override {
++      for (auto &slot : slots) {
++        av_buffer_unref(&slot.ref);
++        slot.rgb = egl::rgb_t {};
++        if (slot.bo) {
++          gbm_bo_destroy(slot.bo);
++          slot.bo = nullptr;
++        }
++      }
++    }
++  };
++
++  std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(int width, int height) {
++    auto device = std::make_unique<rkmpp_t>();
++    if (device->init(width, height)) {
++      return nullptr;
++    }
++    return device;
++  }
++}  // namespace rkmpp
+diff --git a/src/platform/linux/rkmpp.h b/src/platform/linux/rkmpp.h
+new file mode 100644
+index 00000000..cc23d824
+--- /dev/null
++++ b/src/platform/linux/rkmpp.h
+@@ -0,0 +1,16 @@
++/**
++ * @file src/platform/linux/rkmpp.h
++ * @brief Declarations for Rockchip MPP (VEPU) hardware accelerated encoding.
++ *
++ * The encode device converts the captured RGB dmabuf to NV12 using the RGA
++ * 2D hardware block (librga) and feeds the result to FFmpeg's h264/hevc_rkmpp
++ * encoder as an AV_PIX_FMT_DRM_PRIME frame (zero-copy on the encode side).
++ */
++#pragma once
++
++// local includes
++#include "src/platform/common.h"
++
++namespace rkmpp {
++  std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(int width, int height);
++}  // namespace rkmpp
+diff --git a/src/platform/linux/wayland.cpp b/src/platform/linux/wayland.cpp
+index ee3f2c3e..f3eb63cf 100644
+--- a/src/platform/linux/wayland.cpp
++++ b/src/platform/linux/wayland.cpp
+@@ -292,6 +292,96 @@ namespace wl {
+     }
+   }
+ 
++  // Destroy the persistent capture buffer ring
++  void dmabuf_t::destroy_ring() {
++    for (auto &slot : ring) {
++      if (slot.wl_buffer) {
++        wl_buffer_destroy(slot.wl_buffer);
++        slot.wl_buffer = nullptr;
++      }
++
++      if (slot.fd >= 0) {
++        close(slot.fd);
++        slot.fd = -1;
++      }
++
++      if (slot.bo) {
++        gbm_bo_destroy(slot.bo);
++        slot.bo = nullptr;
++      }
++    }
++
++    ring_next = 0;
++    ring_width = ring_height = ring_format = 0;
++  }
++
++  // Allocate the persistent capture buffer ring for the current output size
++  bool dmabuf_t::init_ring() {
++    for (auto &slot : ring) {
++      // LINEAR: the VEPU cannot read framebuffer compression formats.
++      slot.bo = gbm_bo_create(gbm_device, dmabuf_info.width, dmabuf_info.height, dmabuf_info.format, GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
++      if (!slot.bo) {
++        BOOST_LOG(error) << "[wayland] Failed to create GBM buffer"sv;
++        destroy_ring();
++        return false;
++      }
++
++      slot.fd = gbm_bo_get_fd(slot.bo);
++      if (slot.fd < 0) {
++        BOOST_LOG(error) << "[wayland] Failed to get buffer FD"sv;
++        destroy_ring();
++        return false;
++      }
++
++      slot.stride = gbm_bo_get_stride(slot.bo);
++      slot.modifier = gbm_bo_get_modifier(slot.bo);
++
++      auto params = zwp_linux_dmabuf_v1_create_params(dmabuf_interface);
++      zwp_linux_buffer_params_v1_add(params, slot.fd, 0, 0, slot.stride, slot.modifier >> 32, slot.modifier & 0xffffffff);
++      slot.wl_buffer = zwp_linux_buffer_params_v1_create_immed(params, dmabuf_info.width, dmabuf_info.height, dmabuf_info.format, 0);
++      zwp_linux_buffer_params_v1_destroy(params);
++
++      if (!slot.wl_buffer) {
++        BOOST_LOG(error) << "[wayland] Failed to create wl_buffer from dmabuf"sv;
++        destroy_ring();
++        return false;
++      }
++    }
++
++    ring_next = 0;
++    ring_width = dmabuf_info.width;
++    ring_height = dmabuf_info.height;
++    ring_format = dmabuf_info.format;
++
++    BOOST_LOG(info) << "[wayland] Capture buffer ring: "sv << RING_SIZE << " x "sv << ring_width << 'x' << ring_height;
++    return true;
++  }
++
++  // Capture into the next ring slot
++  void dmabuf_t::copy_into_ring(zwlr_screencopy_frame_v1 *frame) {
++    if (ring_width != dmabuf_info.width || ring_height != dmabuf_info.height || ring_format != dmabuf_info.format) {
++      destroy_ring();
++      if (!init_ring()) {
++        zwlr_screencopy_frame_v1_destroy(frame);
++        status = REINIT;
++        return;
++      }
++    }
++
++    auto &slot = ring[ring_next];
++    ring_next = (ring_next + 1) % RING_SIZE;
++
++    // The consumer takes ownership of the frame's fds, the slot keeps its own.
++    auto next_frame = get_next_frame();
++    next_frame->destroy();
++    next_frame->sd.fds[0] = dup(slot.fd);
++    next_frame->sd.pitches[0] = slot.stride;
++    next_frame->sd.offsets[0] = 0;
++    next_frame->sd.modifier = slot.modifier;
++
++    zwlr_screencopy_frame_v1_copy(frame, slot.wl_buffer);
++  }
++
+   dmabuf_t::dmabuf_t():
+       status {READY},
+       frames {},
+@@ -339,6 +429,7 @@ namespace wl {
+ 
+   dmabuf_t::~dmabuf_t() {
+     cleanup_gbm();
++    destroy_ring();
+ 
+     for (auto &frame : frames) {
+       frame.destroy();
+@@ -419,6 +510,11 @@ namespace wl {
+       return;
+     }
+ 
++    if (linear_ring) {
++      copy_into_ring(frame);
++      return;
++    }
++
+     // Create GBM buffer
+     if (supported_modifiers) {
+       auto it = supported_modifiers->find(dmabuf_info.format);
+@@ -564,6 +660,7 @@ namespace wl {
+ 
+     // Clean up resources
+     cleanup_gbm();
++    destroy_ring();
+     auto next_frame = get_next_frame();
+     next_frame->destroy();
+ 
+diff --git a/src/platform/linux/wayland.h b/src/platform/linux/wayland.h
+index 5cd24bf0..eccedff3 100644
+--- a/src/platform/linux/wayland.h
++++ b/src/platform/linux/wayland.h
+@@ -197,10 +197,14 @@ namespace wl {
+     std::array<frame_t, 2> frames;  ///< Double-buffered frame descriptors.
+     frame_t *current_frame;  ///< Frame descriptor currently being filled by the compositor.
+     zwlr_screencopy_frame_v1_listener listener;  ///< Callback table registered on screencopy frames.
++    bool linear_ring {false};  ///< Capture into a persistent ring of single-plane LINEAR buffers.
+ 
+   private:
+     bool init_gbm();
+     void cleanup_gbm();
++    bool init_ring();
++    void destroy_ring();
++    void copy_into_ring(zwlr_screencopy_frame_v1 *frame);
+     void create_and_copy_dmabuf(zwlr_screencopy_frame_v1 *frame);
+ 
+     zwp_linux_dmabuf_v1 *dmabuf_interface {nullptr};
+@@ -224,6 +228,27 @@ namespace wl {
+     struct gbm_device *gbm_device {nullptr};
+     struct gbm_bo *current_bo {nullptr};
+     struct wl_buffer *current_wl_buffer {nullptr};
++
++    /**
++     * @brief Capture buffer kept for the lifetime of the ring.
++     *
++     * A gbm_bo and wl_buffer per frame cost an allocation plus a compositor
++     * round-trip every frame, which caps the capture rate under load.
++     */
++    struct ring_slot_t {
++      struct gbm_bo *bo {nullptr};  ///< LINEAR buffer object.
++      struct wl_buffer *wl_buffer {nullptr};  ///< Wayland buffer wrapping the bo.
++      int fd {-1};  ///< DMA-BUF fd owned by the slot.
++      std::uint32_t stride {0};  ///< Row pitch in bytes.
++      std::uint64_t modifier {0};  ///< DRM format modifier.
++    };
++
++    static constexpr int RING_SIZE = 4;  ///< Buffers in the ring.
++    std::array<ring_slot_t, RING_SIZE> ring;  ///< Capture buffers.
++    int ring_next {0};  ///< Next slot to capture into.
++    std::uint32_t ring_width {0};  ///< Width the ring was allocated for.
++    std::uint32_t ring_height {0};  ///< Height the ring was allocated for.
++    std::uint32_t ring_format {0};  ///< Format the ring was allocated for.
+     bool y_invert {false};
+   };
+ 
+diff --git a/src/platform/linux/wlgrab.cpp b/src/platform/linux/wlgrab.cpp
+index 30be46e5..1b648839 100644
+--- a/src/platform/linux/wlgrab.cpp
++++ b/src/platform/linux/wlgrab.cpp
+@@ -7,6 +7,9 @@
+ 
+ // local includes
+ #include "cuda.h"
++#ifdef SUNSHINE_BUILD_RKMPP
++  #include "rkmpp.h"
++#endif
+ #include "src/logging.h"
+ #include "src/platform/common.h"
+ #include "src/video.h"
+@@ -30,6 +33,12 @@ namespace wl {
+     }
+ #endif
+ 
++#ifdef SUNSHINE_BUILD_RKMPP
++    if (hwdevice_type == platf::mem_type_e::rkmpp) {
++      return true;
++    }
++#endif
++
+     return false;
+   }
+ 
+@@ -70,6 +79,9 @@ namespace wl {
+       }
+ 
+       mem_type = hwdevice_type;
++#ifdef SUNSHINE_BUILD_RKMPP
++      dmabuf.linear_ring = hwdevice_type == platf::mem_type_e::rkmpp;
++#endif
+ 
+       if (display.init()) {
+         return -1;
+@@ -461,6 +473,11 @@ namespace wl {
+      * @return Constructed AVCodec encode device object.
+      */
+     std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(platf::pix_fmt_e pix_fmt) override {
++#ifdef SUNSHINE_BUILD_RKMPP
++      if (mem_type == platf::mem_type_e::rkmpp) {
++        return rkmpp::make_avcodec_encode_device(width, height);
++      }
++#endif
+ #ifdef SUNSHINE_BUILD_VAAPI
+       if (mem_type == platf::mem_type_e::vaapi) {
+         return va::make_avcodec_encode_device(width, height, 0, 0, true);
+@@ -497,7 +514,7 @@ namespace platf {
+    * @brief Create a Wayland capture backend for the requested memory type.
+    */
+   std::shared_ptr<display_t> wl_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
+-    if (hwdevice_type != platf::mem_type_e::system && hwdevice_type != platf::mem_type_e::vaapi && hwdevice_type != platf::mem_type_e::cuda) {
++    if (hwdevice_type != platf::mem_type_e::system && hwdevice_type != platf::mem_type_e::vaapi && hwdevice_type != platf::mem_type_e::cuda && hwdevice_type != platf::mem_type_e::rkmpp) {
+       BOOST_LOG(error) << "[wlgrab] Could not initialize display with the given hw device type."sv;
+       return nullptr;
+     }
+diff --git a/src/video.cpp b/src/video.cpp
+index 843a19a0..57dc0e84 100644
+--- a/src/video.cpp
++++ b/src/video.cpp
+@@ -220,6 +220,9 @@ namespace video {
+    * @return Hardware buffer on success, or an error code on failure.
+    */
+   util::Either<avcodec_buffer_t, int> vulkan_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
++#ifdef SUNSHINE_BUILD_RKMPP
++  util::Either<avcodec_buffer_t, int> rkmpp_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
++#endif
+ 
+   int avcodec_software_encode_device_t::convert(platf::img_t &img) {
+     // If we need to add aspect ratio padding, we need to scale into an intermediate output buffer
+@@ -1293,6 +1296,54 @@ namespace video {
+     LIMITED_GOP_SIZE | PARALLEL_ENCODING | NO_RC_BUF_LIMIT
+   };
+ 
++  #ifdef SUNSHINE_BUILD_RKMPP
++  encoder_t rkmpp {
++    "rkmpp"sv,
++    std::make_unique<encoder_platform_formats_avcodec>(
++      AV_HWDEVICE_TYPE_RKMPP,
++      AV_HWDEVICE_TYPE_NONE,
++      AV_PIX_FMT_DRM_PRIME,
++      AV_PIX_FMT_BGR0,  // SDR 8-bit: captured XRGB8888 dmabuf fed to the VEPU as-is (hardware CSC)
++      AV_PIX_FMT_NONE,  // HDR 10-bit (unsupported for now)
++      AV_PIX_FMT_NONE,  // YUV444 SDR (unsupported)
++      AV_PIX_FMT_NONE,  // YUV444 HDR (unsupported)
++      rkmpp_init_avcodec_hardware_input_buffer
++    ),
++    {
++      // AV1 is not supported by the RK3588 VEPU
++      {}, {}, {}, {}, {}, {},
++      "av1_rkmpp"s,
++    },
++    {
++      // HEVC
++      {
++        // CBR: hold the bitrate steady and let QP rise on high-motion frames
++        // (smaller packets, stable frame pacing) instead of holding quality.
++        {"rc_mode"s, "CBR"s},
++      },
++      {},  // SDR-specific options
++      {},  // HDR-specific options
++      {},  // YUV444 SDR-specific options
++      {},  // YUV444 HDR-specific options
++      {},  // Fallback options
++      "hevc_rkmpp"s,
++    },
++    {
++      // H.264
++      {
++        {"rc_mode"s, "CBR"s},
++      },
++      {},  // SDR-specific options
++      {},  // HDR-specific options
++      {},  // YUV444 SDR-specific options
++      {},  // YUV444 HDR-specific options
++      {},  // Fallback options
++      "h264_rkmpp"s,
++    },
++    LIMITED_GOP_SIZE | NO_RC_BUF_LIMIT
++  };
++  #endif
++
+   #ifdef SUNSHINE_BUILD_VULKAN
+   encoder_t vulkan {
+     "vulkan"sv,
+@@ -1458,6 +1509,9 @@ namespace video {
+ #if defined(__linux__) || defined(linux) || defined(__linux) || defined(__FreeBSD__)
+   #ifdef SUNSHINE_BUILD_VULKAN
+     &vulkan,
++  #endif
++  #ifdef SUNSHINE_BUILD_RKMPP
++    &rkmpp,
+   #endif
+     &vaapi,
+ #endif
+@@ -3538,6 +3592,21 @@ namespace video {
+     return hw_device_buf;
+   }
+ 
++#ifdef SUNSHINE_BUILD_RKMPP
++  util::Either<avcodec_buffer_t, int> rkmpp_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *encode_device) {
++    avcodec_buffer_t hw_device_buf;
++
++    auto status = av_hwdevice_ctx_create(&hw_device_buf, AV_HWDEVICE_TYPE_RKMPP, nullptr, nullptr, 0);
++    if (status < 0) {
++      char string[AV_ERROR_MAX_STRING_SIZE];
++      BOOST_LOG(error) << "Failed to create a RKMPP device: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
++      return -1;
++    }
++
++    return hw_device_buf;
++  }
++#endif
++
+ #ifdef SUNSHINE_BUILD_VULKAN
+   using vulkan_init_avcodec_hardware_input_buffer_fn = int (*)(platf::avcodec_encode_device_t *encode_device, AVBufferRef **hw_device_buf);
+ 
+@@ -3702,6 +3771,10 @@ namespace video {
+ #ifdef SUNSHINE_BUILD_VULKAN
+       case AV_HWDEVICE_TYPE_VULKAN:
+         return platf::mem_type_e::vulkan;
++#endif
++#ifdef SUNSHINE_BUILD_RKMPP
++      case AV_HWDEVICE_TYPE_RKMPP:
++        return platf::mem_type_e::rkmpp;
+ #endif
+       case AV_HWDEVICE_TYPE_CUDA:
+         return platf::mem_type_e::cuda;
+-- 
+2.55.0
+
