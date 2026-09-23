@@ -1,0 +1,39 @@
+From f205324120c758d772fd25cc6d14961b8a58d146 Mon Sep 17 00:00:00 2001
+From: Johan Alvarado <contact@c127.dev>
+Date: Wed, 23 Sep 2026 18:23:09 -0500
+Subject: [PATCH] fix: support riscv64 in x264 and FFmpeg CBS headers
+
+---
+ cmake/ffmpeg/ffmpeg.cmake | 2 ++
+ cmake/ffmpeg/x264.cmake   | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/cmake/ffmpeg/ffmpeg.cmake b/cmake/ffmpeg/ffmpeg.cmake
+index 0b1871f..f760cb7 100644
+--- a/cmake/ffmpeg/ffmpeg.cmake
++++ b/cmake/ffmpeg/ffmpeg.cmake
+@@ -12,6 +12,8 @@ elseif (${arch} STREQUAL "ppc64le")
+     set(CBS_ARCH_PATH ppc)
+ elseif (${arch} STREQUAL "amd64" OR ${arch} STREQUAL "x86_64")
+     set(CBS_ARCH_PATH x86)
++elseif (${arch} STREQUAL "riscv64")
++    set(CBS_ARCH_PATH riscv)
+ elseif (${arch} STREQUAL "mips")
+     set(CBS_ARCH_PATH mips)
+ else()
+diff --git a/cmake/ffmpeg/x264.cmake b/cmake/ffmpeg/x264.cmake
+index 4b3b29e..0a5c00f 100644
+--- a/cmake/ffmpeg/x264.cmake
++++ b/cmake/ffmpeg/x264.cmake
+@@ -14,6 +14,8 @@ elseif (${arch} STREQUAL "ppc64le")
+     set(X264_ARCH powerpc64le)
+ elseif (${arch} STREQUAL "amd64" OR ${arch} STREQUAL "x86_64")
+     set(X264_ARCH x86_64)
++elseif (${arch} STREQUAL "riscv64")
++    set(X264_ARCH riscv64)
+ elseif (${arch} STREQUAL "mips")
+     set(X264_ARCH mips)  # TODO: unknown if this is the correct value
+ else()
+-- 
+2.55.0
+
