@@ -80,6 +80,8 @@ jobs:
           - {target: generic, arch: amd64, platform: linux/amd64, runner: ubuntu-24.04}
           - {target: generic, arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm}
           - {target: opi5pro, arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm}
+          - {target: rocketlake, arch: amd64, platform: linux/amd64, runner: ubuntu-24.04}
+          - {target: znver3, arch: amd64, platform: linux/amd64, runner: ubuntu-24.04}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -236,8 +238,8 @@ jobs:
         run: |
           set -euo pipefail
           # generic: one index over every architecture that built.
-          # opi5pro: its own tags, never latest.
-          for target in generic opi5pro; do
+          # Tuned targets: their own tags, never latest.
+          for target in generic opi5pro rocketlake znver3; do
             refs=()
             for d in digests/digest-"$target"-*/*; do
               [ -e "$d" ] && refs+=("$IMAGE@sha256:$(basename "$d")")
@@ -270,4 +272,4 @@ jobs:
           fail_on_unmatched_files: true
           body: |
             - Source: ${{ needs.plan.outputs.sha }}
-            - Images: `${{ needs.plan.outputs.image }}:${{ needs.plan.outputs.version }}`, `${{ needs.plan.outputs.image }}:${{ needs.plan.outputs.version }}-opi5pro`
+            - Images: `${{ needs.plan.outputs.image }}:${{ needs.plan.outputs.version }}`, plus `-opi5pro`, `-rocketlake` and `-znver3` variants

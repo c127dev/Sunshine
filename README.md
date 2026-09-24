@@ -7,6 +7,8 @@ patches under `patches/`.
 | --- | --- | --- | --- | --- |
 | `generic` | `master` (input `source_ref`) | `patches/common` | amd64, arm64, riscv64 | `<version>`, `latest`, `sha-<short>` |
 | `opi5pro` | `master` (input `source_ref`) | `patches/common`, `patches/opi5pro` | arm64 | `<version>-opi5pro`, `opi5pro` |
+| `rocketlake` | `master` (input `source_ref`) | `patches/common` | amd64, `-march=rocketlake` (AVX-512) | `<version>-rocketlake`, `rocketlake` |
+| `znver3` | `master` (input `source_ref`) | `patches/common` | amd64, `-march=znver3` (Ryzen 5000) | `<version>-znver3`, `znver3` |
 
 Images go to `ghcr.io/<owner>/sunshine`, and to `docker.io/$DOCKERHUB_USERNAME/sunshine`
 when the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets are set. Every run
@@ -18,6 +20,9 @@ the `ffmpeg-riscv64` job compiles it once into
 `ghcr.io/<owner>/sunshine-ffmpeg:<build-deps sha>-<patches hash>-riscv64` and
 later runs reuse that image until build-deps or `patches/build-deps` changes.
 A failed riscv64 build does not stop the other images or the release.
+
+Tuned targets compile FFmpeg from source with their own `-march`; the
+binaries do not start on older CPUs.
 
 ## Run
 
