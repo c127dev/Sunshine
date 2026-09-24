@@ -74,7 +74,7 @@ RUN --mount=type=bind,from=build,source=/out,target=/out \
     set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends /out/sunshine.deb \
-      libegl1 libgl1-mesa-dri libvulkan1 mesa-va-drivers; \
+      libavahi-client3 libavahi-common3 libegl1 libgl1-mesa-dri libvulkan1 mesa-va-drivers; \
     if [ -e /buildlib/librockchip_mpp.so ]; then \
       cp -a /buildlib/librockchip_mpp.so* /buildlib/librga.so* /usr/lib/; \
       ldconfig; \
