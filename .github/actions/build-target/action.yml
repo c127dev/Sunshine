@@ -5,6 +5,7 @@ inputs:
   target: {required: true}
   arch: {required: true}
   platform: {required: true}
+  source_repo: {required: true}
   source_ref: {required: true}
   image: {required: true}
   version: {required: true}
@@ -23,6 +24,7 @@ runs:
   steps:
     - uses: actions/checkout@v5
       with:
+        repository: ${{ inputs.source_repo }}
         ref: ${{ inputs.source_ref }}
         path: src
         submodules: recursive

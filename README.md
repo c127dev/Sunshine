@@ -38,6 +38,10 @@ curl -X POST \
     -d '{"ref":"compiler","inputs":{"source_ref":"master"}}'
 ```
 
+`source_repo: LizardByte/Sunshine` with an upstream tag as `source_ref` builds
+upstream directly, with the same patches. The autobuild watcher does this on
+every upstream stable release.
+
 `release: false` builds and uploads the `.deb` artifacts only.
 
 ## Local build

@@ -3,6 +3,10 @@ name: c127 build
 on:
   workflow_dispatch:
     inputs:
+      source_repo:
+        description: 'Repository the source is checked out from, empty for this one'
+        type: string
+        default: ''
       source_ref:
         description: 'Source ref for the generic images (opi5pro pins its own in targets/opi5pro.env)'
         type: string
@@ -34,17 +38,20 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       sha: ${{ steps.plan.outputs.sha }}
+      repo: ${{ steps.plan.outputs.repo }}
       tag: ${{ steps.plan.outputs.tag }}
       version: ${{ steps.plan.outputs.version }}
       image: ${{ steps.plan.outputs.image }}
     steps:
       - uses: actions/checkout@v5
         with:
+          repository: ${{ inputs.source_repo || github.repository }}
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
 
       - id: plan
         env:
+          SOURCE_REPO: ${{ inputs.source_repo }}
           SOURCE_REF: ${{ inputs.source_ref }}
           SOURCE_BRANCH: ${{ inputs.source_branch }}
           OWNER: ${{ github.repository_owner }}
@@ -63,6 +70,7 @@ jobs:
           echo "source $sha, tag $tag, image $image"
           {
             echo "sha=$sha"
+            echo "repo=${SOURCE_REPO:-$GITHUB_REPOSITORY}"
             echo "tag=$tag"
             echo "version=$version"
             echo "image=$image"
@@ -94,6 +102,7 @@ jobs:
           target: ${{ matrix.target }}
           arch: ${{ matrix.arch }}
           platform: ${{ matrix.platform }}
+          source_repo: ${{ needs.plan.outputs.repo }}
           source_ref: ${{ needs.plan.outputs.sha }}
           image: ${{ needs.plan.outputs.image }}
           version: ${{ needs.plan.outputs.version }}
@@ -117,6 +126,7 @@ jobs:
 
       - uses: actions/checkout@v5
         with:
+          repository: ${{ needs.plan.outputs.repo }}
           ref: ${{ needs.plan.outputs.sha }}
           path: src
 
@@ -181,6 +191,7 @@ jobs:
           target: generic
           arch: riscv64
           platform: linux/riscv64
+          source_repo: ${{ needs.plan.outputs.repo }}
           source_ref: ${{ needs.plan.outputs.sha }}
           image: ${{ needs.plan.outputs.image }}
           version: ${{ needs.plan.outputs.version }}
@@ -268,10 +279,11 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.plan.outputs.tag }}
-          target_commitish: ${{ needs.plan.outputs.sha }}
+          # An upstream commit may not exist here; the tag then marks this branch.
+          target_commitish: ${{ needs.plan.outputs.repo == github.repository && needs.plan.outputs.sha || github.sha }}
           name: Sunshine ${{ needs.plan.outputs.tag }}
           files: dist/*.deb
           fail_on_unmatched_files: true
           body: |
-            - Source: ${{ needs.plan.outputs.sha }}
+            - Source: ${{ needs.plan.outputs.repo }}@${{ needs.plan.outputs.sha }}
             - Images: `${{ needs.plan.outputs.image }}:${{ needs.plan.outputs.version }}`, plus `-opi5pro`, `-rpi4`, `-rocketlake` and `-znver3` variants
