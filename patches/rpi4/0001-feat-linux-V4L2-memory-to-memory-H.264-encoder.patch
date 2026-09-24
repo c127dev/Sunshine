@@ -1,0 +1,118 @@
+From dc0fc1ea485100c48fd996497a722cbc9b16453c Mon Sep 17 00:00:00 2001
+From: Johan Alvarado <contact@c127.dev>
+Date: Wed, 23 Sep 2026 19:16:11 -0500
+Subject: [PATCH] feat(linux): V4L2 memory-to-memory H.264 encoder
+
+h264_v4l2m2m fed BGRx frames from system memory; the Raspberry Pi 4
+encoder converts to YUV in hardware.
+---
+ cmake/compile_definitions/linux.cmake |  5 +++
+ cmake/prep/options.cmake              |  2 +
+ src/video.cpp                         | 55 +++++++++++++++++++++++++++
+ 3 files changed, 62 insertions(+)
+
+diff --git a/cmake/compile_definitions/linux.cmake b/cmake/compile_definitions/linux.cmake
+index 485e419a..09f39ada 100644
+--- a/cmake/compile_definitions/linux.cmake
++++ b/cmake/compile_definitions/linux.cmake
+@@ -124,6 +124,11 @@ if(LIBVA_FOUND)
+             "${CMAKE_SOURCE_DIR}/src/platform/linux/vaapi.cpp")
+ endif()
+ 
++# V4L2 memory-to-memory encoding (via FFmpeg h264_v4l2m2m)
++if(${SUNSHINE_ENABLE_V4L2M2M})
++    add_compile_definitions(SUNSHINE_BUILD_V4L2M2M)
++endif()
++
+ # vulkan video encoding (via FFmpeg)
+ if(${SUNSHINE_ENABLE_VULKAN})
+     if(NOT SUNSHINE_SYSTEM_VULKAN_HEADERS)
+diff --git a/cmake/prep/options.cmake b/cmake/prep/options.cmake
+index f6d4e5b4..761bf086 100644
+--- a/cmake/prep/options.cmake
++++ b/cmake/prep/options.cmake
+@@ -62,6 +62,8 @@ elseif(UNIX)  # Linux
+             "Enable KMS grab if available." ON)
+     option(SUNSHINE_ENABLE_VAAPI
+             "Enable building vaapi specific code." ON)
++    option(SUNSHINE_ENABLE_V4L2M2M
++            "Enable the V4L2 memory-to-memory H.264 encoder (Raspberry Pi 4)." OFF)
+     option(SUNSHINE_ENABLE_VULKAN
+             "Enable Vulkan video encoding." ON)
+     option(SUNSHINE_ENABLE_WAYLAND
+diff --git a/src/video.cpp b/src/video.cpp
+index 843a19a0..712c8eb8 100644
+--- a/src/video.cpp
++++ b/src/video.cpp
+@@ -1293,6 +1293,58 @@ namespace video {
+     LIMITED_GOP_SIZE | PARALLEL_ENCODING | NO_RC_BUF_LIMIT
+   };
+ 
++  #ifdef SUNSHINE_BUILD_V4L2M2M
++  /**
++   * @brief V4L2 memory-to-memory H.264 encoder.
++   *
++   * Frames stay BGRx in system memory; the encoder converts to YUV itself.
++   */
++  encoder_t v4l2m2m {
++    "v4l2m2m"sv,
++    std::make_unique<encoder_platform_formats_avcodec>(
++      AV_HWDEVICE_TYPE_NONE,
++      AV_HWDEVICE_TYPE_NONE,
++      AV_PIX_FMT_NONE,
++      AV_PIX_FMT_BGR0,
++      AV_PIX_FMT_NONE,
++      AV_PIX_FMT_NONE,
++      AV_PIX_FMT_NONE,
++      nullptr
++    ),
++    {
++      {},  // Common options
++      {},  // SDR-specific options
++      {},  // HDR-specific options
++      {},  // YUV444 SDR-specific options
++      {},  // YUV444 HDR-specific options
++      {},  // Fallback options
++      {},
++      {},  // capabilities
++    },
++    {
++      {},  // Common options
++      {},  // SDR-specific options
++      {},  // HDR-specific options
++      {},  // YUV444 SDR-specific options
++      {},  // YUV444 HDR-specific options
++      {},  // Fallback options
++      {},
++      {},  // capabilities
++    },
++    {
++      {},  // Common options
++      {},  // SDR-specific options
++      {},  // HDR-specific options
++      {},  // YUV444 SDR-specific options
++      {},  // YUV444 HDR-specific options
++      {},  // Fallback options
++      "h264_v4l2m2m"s,
++      {},  // capabilities
++    },
++    H264_ONLY | LIMITED_GOP_SIZE | SINGLE_SLICE_ONLY
++  };
++  #endif
++
+   #ifdef SUNSHINE_BUILD_VULKAN
+   encoder_t vulkan {
+     "vulkan"sv,
+@@ -1460,6 +1512,9 @@ namespace video {
+     &vulkan,
+   #endif
+     &vaapi,
++  #ifdef SUNSHINE_BUILD_V4L2M2M
++    &v4l2m2m,
++  #endif
+ #endif
+ #ifdef __APPLE__
+     &videotoolbox,
+-- 
+2.55.0
+

@@ -7,6 +7,7 @@ patches under `patches/`.
 | --- | --- | --- | --- | --- |
 | `generic` | `master` (input `source_ref`) | `patches/common` | amd64, arm64, riscv64 | `<version>`, `latest`, `sha-<short>` |
 | `opi5pro` | `master` (input `source_ref`) | `patches/common`, `patches/opi5pro` | arm64 | `<version>-opi5pro`, `opi5pro` |
+| `rpi4` | `master` (input `source_ref`) | `patches/common`, `patches/rpi4` | arm64, `h264_v4l2m2m` | `<version>-rpi4`, `rpi4` |
 | `rocketlake` | `master` (input `source_ref`) | `patches/common` | amd64, `-march=rocketlake` (AVX-512) | `<version>-rocketlake`, `rocketlake` |
 | `znver3` | `master` (input `source_ref`) | `patches/common` | amd64, `-march=znver3` (Ryzen 5000) | `<version>-znver3`, `znver3` |
 
@@ -78,6 +79,9 @@ podman run --rm -it --read-only --name sunshine \
     -p 47998-48000:47998-48000/udp -p 48002:48002/udp -p 48010:48010/udp \
     ghcr.io/c127dev/sunshine:latest
 ```
+
+On the Raspberry Pi 4 use `:rpi4` and add `--device /dev/video11` (the
+`bcm2835-codec-encode` node, see `v4l2-ctl --list-devices`). H.264 only.
 
 On the Orange Pi 5 Pro use `:opi5pro` and add
 `--device /dev/mpp_service --device /dev/dma_heap --group-add keep-groups --security-opt unmask=/sys/firmware`.

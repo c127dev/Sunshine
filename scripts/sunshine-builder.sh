@@ -95,24 +95,28 @@ elif [ "$FFMPEG" != prebuilt ]; then
     echo "--- FFmpeg from nyanmisaka/ffmpeg-rockchip@8.1 ---"
     rm -rf "$ff"
     git clone -q --depth 1 -b 8.1 https://github.com/nyanmisaka/ffmpeg-rockchip.git "$ff"
-    python3 - cmake/ffmpeg/ffmpeg.cmake <<'PY'
-import sys
+    # VAAPI, Vulkan and SVT-AV1 are unusable on RK3588.
+    deps_flags+=(-DBUILD_FFMPEG_LIBVA=OFF -DBUILD_FFMPEG_VULKAN=OFF -DBUILD_FFMPEG_SVT_AV1=OFF)
+  fi
+
+  for dir in ${FFMPEG_PATCH_DIRS:-}; do
+    for patch in "$PKG/$dir"/*.patch; do
+      echo "--- apply FFmpeg $dir/$(basename "$patch") ---"
+      git -C third-party/FFmpeg/FFmpeg apply --verbose "$patch"
+    done
+  done
+
+  if [ -n "${FFMPEG_CONFIGURE:-}" ]; then
+    FFMPEG_CONFIGURE="$FFMPEG_CONFIGURE" python3 - cmake/ffmpeg/ffmpeg.cmake <<'PY'
+import os, sys
 path = sys.argv[1]
 src = open(path).read()
 anchor = "        --enable-swscale\n"
 if anchor not in src:
     sys.exit("anchor '--enable-swscale' not found in " + path)
-inject = (
-    "        --enable-version3\n"
-    "        --enable-libdrm\n"
-    "        --enable-rkmpp\n"
-    "        --enable-rkrga\n"
-    "        --enable-encoder=h264_rkmpp,hevc_rkmpp,mjpeg_rkmpp\n"
-)
+inject = "".join("        %s\n" % flag for flag in os.environ["FFMPEG_CONFIGURE"].split())
 open(path, "w").write(src.replace(anchor, anchor + inject, 1))
 PY
-    # VAAPI, Vulkan and SVT-AV1 are unusable on RK3588.
-    deps_flags+=(-DBUILD_FFMPEG_LIBVA=OFF -DBUILD_FFMPEG_VULKAN=OFF -DBUILD_FFMPEG_SVT_AV1=OFF)
   fi
 
   cmake -B build -S . "${deps_flags[@]}"
@@ -132,6 +136,9 @@ if [ "${RKMPP:-OFF}" = ON ]; then
     "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--no-as-needed -lrockchip_mpp -lrga -Wl,--as-needed"
   )
 fi
+
+# shellcheck disable=SC2206
+sunshine_flags+=(${SUNSHINE_CMAKE:-})
 
 cmake -B build -S . "${sunshine_flags[@]}"
 cmake --build build -j "$(nproc)"

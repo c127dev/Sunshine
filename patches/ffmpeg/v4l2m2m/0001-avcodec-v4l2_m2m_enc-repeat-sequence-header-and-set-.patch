@@ -1,0 +1,35 @@
+From 71966f742a7c30855c2d93d9ef9745d71d714c75 Mon Sep 17 00:00:00 2001
+From: Johan Alvarado <contact@c127.dev>
+Date: Wed, 23 Sep 2026 19:15:24 -0500
+Subject: [PATCH] avcodec/v4l2_m2m_enc: repeat sequence header and set the
+ H.264 I period
+
+---
+ libavcodec/v4l2_m2m_enc.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/libavcodec/v4l2_m2m_enc.c b/libavcodec/v4l2_m2m_enc.c
+index 93703cc..48a5d19 100644
+--- a/libavcodec/v4l2_m2m_enc.c
++++ b/libavcodec/v4l2_m2m_enc.c
+@@ -197,6 +197,8 @@ static int v4l2_prepare_encoder(V4L2m2mContext *s)
+     v4l2_set_ext_ctrl(s, MPEG_CID(BITRATE) , avctx->bit_rate, "bit rate", 1);
+     v4l2_set_ext_ctrl(s, MPEG_CID(FRAME_RC_ENABLE), 1, "frame level rate control", 0);
+     v4l2_set_ext_ctrl(s, MPEG_CID(GOP_SIZE), avctx->gop_size,"gop size", 1);
++    /* Streaming clients need SPS/PPS in front of every IDR, not only the first buffer. */
++    v4l2_set_ext_ctrl(s, MPEG_CID(REPEAT_SEQ_HEADER), 1, "repeat sequence header", 0);
+ 
+     av_log(avctx, AV_LOG_DEBUG,
+         "Encoder Context: id (%d), profile (%d), frame rate(%d/%d), number b-frames (%d), "
+@@ -206,6 +208,8 @@ static int v4l2_prepare_encoder(V4L2m2mContext *s)
+ 
+     switch (avctx->codec_id) {
+     case AV_CODEC_ID_H264:
++        /* Some drivers take the IDR interval from here and ignore GOP_SIZE. */
++        v4l2_set_ext_ctrl(s, MPEG_CID(H264_I_PERIOD), avctx->gop_size, "h264 i period", 0);
+         if (avctx->profile != AV_PROFILE_UNKNOWN) {
+             val = v4l2_h264_profile_from_ff(avctx->profile);
+             if (val < 0)
+-- 
+2.55.0
+
