@@ -38,10 +38,10 @@ runs:
       working-directory: src
       run: |
         set -euo pipefail
-        mkdir -p .webui
+        mkdir -p c127-webui
         npm ci --ignore-scripts
-        SUNSHINE_SOURCE_ASSETS_DIR="$PWD/src_assets" SUNSHINE_ASSETS_DIR="$PWD/.webui" npm run build
-        test -f .webui/assets/web/index.html
+        SUNSHINE_SOURCE_ASSETS_DIR="$PWD/src_assets" SUNSHINE_ASSETS_DIR="$PWD/c127-webui" npm run build
+        test -f c127-webui/assets/web/index.html
         rm -rf node_modules
 
     - uses: docker/setup-qemu-action@v3
