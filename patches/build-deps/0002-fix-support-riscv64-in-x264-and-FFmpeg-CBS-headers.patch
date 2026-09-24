@@ -1,15 +1,16 @@
-From f205324120c758d772fd25cc6d14961b8a58d146 Mon Sep 17 00:00:00 2001
+From 8bf2df8e0ae72a44ea36cefc2c8fab3a2615f65c Mon Sep 17 00:00:00 2001
 From: Johan Alvarado <contact@c127.dev>
-Date: Wed, 23 Sep 2026 18:23:09 -0500
+Date: Wed, 23 Sep 2026 19:32:47 -0500
 Subject: [PATCH] fix: support riscv64 in x264 and FFmpeg CBS headers
 
+riscv/mathops.h includes libavutil/riscv/cpu.h, install it as well.
 ---
- cmake/ffmpeg/ffmpeg.cmake | 2 ++
+ cmake/ffmpeg/ffmpeg.cmake | 6 ++++++
  cmake/ffmpeg/x264.cmake   | 2 ++
- 2 files changed, 4 insertions(+)
+ 2 files changed, 8 insertions(+)
 
 diff --git a/cmake/ffmpeg/ffmpeg.cmake b/cmake/ffmpeg/ffmpeg.cmake
-index 0b1871f..f760cb7 100644
+index 0b1871f..92177f2 100644
 --- a/cmake/ffmpeg/ffmpeg.cmake
 +++ b/cmake/ffmpeg/ffmpeg.cmake
 @@ -12,6 +12,8 @@ elseif (${arch} STREQUAL "ppc64le")
@@ -21,6 +22,17 @@ index 0b1871f..f760cb7 100644
  elseif (${arch} STREQUAL "mips")
      set(CBS_ARCH_PATH mips)
  else()
+@@ -284,6 +286,10 @@ if (EXISTS ${AVUTIL_GENERATED_SRC_PATH}/${CBS_ARCH_PATH}/asm.h)
+     install(FILES ${AVUTIL_GENERATED_SRC_PATH}/${CBS_ARCH_PATH}/asm.h
+             DESTINATION ${FFMPEG_INSTALL_PREFIX}/include/libavutil/${CBS_ARCH_PATH})
+ endif()
++if (EXISTS ${AVUTIL_GENERATED_SRC_PATH}/${CBS_ARCH_PATH}/cpu.h)
++    install(FILES ${AVUTIL_GENERATED_SRC_PATH}/${CBS_ARCH_PATH}/cpu.h
++            DESTINATION ${FFMPEG_INSTALL_PREFIX}/include/libavutil/${CBS_ARCH_PATH})
++endif()
+ if (EXISTS ${AVUTIL_GENERATED_SRC_PATH}/${CBS_ARCH_PATH}/intmath.h)
+     install(FILES ${AVUTIL_GENERATED_SRC_PATH}/${CBS_ARCH_PATH}/intmath.h
+             DESTINATION ${FFMPEG_INSTALL_PREFIX}/include/libavutil/${CBS_ARCH_PATH})
 diff --git a/cmake/ffmpeg/x264.cmake b/cmake/ffmpeg/x264.cmake
 index 4b3b29e..0a5c00f 100644
 --- a/cmake/ffmpeg/x264.cmake

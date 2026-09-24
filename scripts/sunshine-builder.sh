@@ -140,7 +140,19 @@ fi
 # shellcheck disable=SC2206
 sunshine_flags+=(${SUNSHINE_CMAKE:-})
 
+# Web UI built outside the container: Rolldown and lightningcss ship no
+# riscv64 binaries, and the output does not depend on the architecture.
+webui=/src/.webui/assets/web
+if [ -d "$webui" ]; then
+  echo "web UI from $webui"
+  sunshine_flags+=(-DNPM=/usr/bin/true)
+fi
+
 cmake -B build -S . "${sunshine_flags[@]}"
+if [ -d "$webui" ]; then
+  mkdir -p build/assets
+  cp -a "$webui" build/assets/
+fi
 cmake --build build -j "$(nproc)"
 (cd build && cpack -G DEB)
 

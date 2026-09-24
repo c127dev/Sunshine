@@ -188,6 +188,7 @@ jobs:
           push: ${{ inputs.release }}
           token: ${{ secrets.GITHUB_TOKEN }}
           ffmpeg_image: ${{ needs.ffmpeg-riscv64.outputs.image }}
+          webui_on_runner: 'true'
 
   publish:
     needs: [plan, build, build-riscv64]

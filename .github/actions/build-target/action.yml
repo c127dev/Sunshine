@@ -14,6 +14,9 @@ inputs:
   ffmpeg_image:
     description: Image from the Dockerfile ffmpeg stage; empty compiles or downloads FFmpeg
     default: ''
+  webui_on_runner:
+    description: Build the web UI on the runner instead of inside the target container
+    default: 'false'
 
 runs:
   using: composite
@@ -23,6 +26,23 @@ runs:
         ref: ${{ inputs.source_ref }}
         path: src
         submodules: recursive
+
+    - uses: actions/setup-node@v4
+      if: inputs.webui_on_runner == 'true'
+      with:
+        node-version: 22
+
+    - name: Web UI
+      if: inputs.webui_on_runner == 'true'
+      shell: bash
+      working-directory: src
+      run: |
+        set -euo pipefail
+        mkdir -p .webui
+        npm ci --ignore-scripts
+        SUNSHINE_SOURCE_ASSETS_DIR="$PWD/src_assets" SUNSHINE_ASSETS_DIR="$PWD/.webui" npm run build
+        test -f .webui/assets/web/index.html
+        rm -rf node_modules
 
     - uses: docker/setup-qemu-action@v3
       if: runner.arch == 'X64' && inputs.platform != 'linux/amd64'
